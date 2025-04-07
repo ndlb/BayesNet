@@ -46,10 +46,11 @@ class BayesianNetwork:
                 self.parents[var_name] = []
                 self.cpt[var_name] = {}
 
-            # Read blank line
-            file.readline()
 
             num_of_cpts = int(file.readline().strip())
+
+            # Read blank line
+            file.readline()
 
             for _ in range(num_of_cpts):
                 line = file.readline().strip().split()
@@ -103,8 +104,7 @@ class BayesianNetwork:
         
         def enumerate_all(vars_list, evidence):
             """
-            Recursively compute the sum of probabilities over the assignments
-            to the variables in vars_list given the current evidence.
+            Sum of probabilities over the assignments to var in vars_list given current evidence.
             """
             if not vars_list:
                 return 1.0
@@ -112,7 +112,6 @@ class BayesianNetwork:
             rest = vars_list[1:]
             
             if Y in evidence:
-                # Y's value is fixed in the evidence; multiply its probability factor.
                 return prob(Y, evidence[Y], evidence) * enumerate_all(rest, evidence)
             else:
                 total = 0.0
@@ -123,50 +122,125 @@ class BayesianNetwork:
                     total += prob(Y, y, new_evidence) * enumerate_all(rest, new_evidence)
                 return total
         
-        # Compute the unnormalized distribution for query_var.
+        #unnormalized distribution for query_var.
         distribution = {}
         for q in self.domains[query_var]:
             new_evidence = evidence.copy()
             new_evidence[query_var] = q
             distribution[q] = enumerate_all(variables, new_evidence)
         
-        # Normalize the distribution.
+        #normalize
         total = sum(distribution.values())
         for key in distribution:
             distribution[key] /= total
         
-        # Format the output: list probabilities in the same order as self.domains[query_var]
         result_str = " ".join("{:.4f}".format(distribution[val]) for val in self.domains[query_var])
         return result_str
 
 
-    def rquery(self, query_var, evidence, num_samples=10000):
-        """
-        Compute P(query_var | evidence) using rejection sampling.
-        
-        query_var: a string
-        evidence: dict of {var_name: value}
-        num_samples: number of samples to generate
-        returns: dict of {query_val: probability}
-        """
-        print(f"[INFO] Performing REJECTION SAMPLING for {query_var} given evidence {evidence}")
-        # TODO: implement rejection sampling
-        # dummy output for demonstration:
-        return "{:.4f} {:.4f}".format(T, F)
+    def rquery(self, query_var, evidence, num_samples=100000):
+        # Count accepted samples
+        counts = {val: 0 for val in self.domains[query_var]}
+        accepted = 0
+        variables = list(self.domains.keys())
 
-    def gquery(self, query_var, evidence, num_samples=10000):
-        """
-        Compute P(query_var | evidence) using Gibbs sampling.
+        for _ in range(num_samples):
+            sample = {}
+
+            for var in variables:
+                if not self.parents[var]:
+                    probs = self.cpt[var]
+                else:
+                    parent_vals = tuple(sample[p] for p in self.parents[var])
+                    probs = self.cpt[var][parent_vals]
+
+                # Sample based on probability distribution
+                values = list(self.domains[var])
+                weights = [probs[val] for val in values]
+                sampled_val = random.choices(values, weights=weights)[0]
+                sample[var] = sampled_val
+
+            #Take sample matching evidence
+            consistent = all(sample.get(var) == val for var, val in evidence.items())
+            if consistent:
+                accepted += 1
+                counts[sample[query_var]] += 1
+
+
+        distribution = {val: count / accepted for val, count in counts.items()} #normalize
+
+        return " ".join("{:.4f}".format(distribution[val]) for val in self.domains[query_var])
+
+
+    def gquery(self, query_var, evidence, num_samples=100000, burn_in = 1000):
+        variables = list(self.domains.keys())
+        non_evidence = []
+        state = {}
+        for var in variables:
+            if var in evidence:
+                state[var] = evidence[var]
+            else:
+                non_evidence.append(var)
+                state[var] = random.choice(self.domains[var])
         
-        query_var: a string
-        evidence: dict of {var_name: value}
-        num_samples: number of iterations in the Gibbs chain
-        returns: dict of {query_val: probability}
-        """
-        print(f"[INFO] Performing GIBBS SAMPLING for {query_var} given evidence {evidence}")
-        # TODO: implement Gibbs sampling
-        # dummy output for demonstration:
-        return "{:.4f} {:.4f}".format(T, F)
+        counts = {val: 0 for val in self.domains[query_var]}
+
+        def conditional(var, current_state):
+            '''
+            P(var | MB(var))
+            '''
+            cond_dist = {}
+            for x in self.domains[var]:
+                # P(var = x | parents(var))
+                if not self.parents[var]:
+                    p1 = self.cpt[var][x]
+                else:
+                    parent_vals = tuple(current_state[p] for p in self.parents[var])
+                    p1 = self.cpt[var][parent_vals][x]
+
+                # P(Y = current_state[Y] | parents(Y))
+                p2 = 1.0
+                for Y in variables:
+                    if var in self.parents[Y]:
+                        # Build parent's assignment for Y,
+                        # using candidate x for var and current state for other parents.
+                        parent_assignment = []
+                        for p in self.parents[Y]:
+                            if p == var:
+                                parent_assignment.append(x)
+                            else:
+                                parent_assignment.append(current_state[p])
+                        parent_assignment = tuple(parent_assignment)
+                        p2 *= self.cpt[Y][parent_assignment][current_state[Y]]
+                cond_dist[x] = p1 * p2
+
+            #normalize
+            total = sum(cond_dist.values())
+            if total == 0:
+                # Avoid division by zero
+                norm_dist = {k: 1.0 / len(cond_dist) for k in cond_dist}
+            else:
+                norm_dist = {k: v / total for k, v in cond_dist.items()}
+            return norm_dist
+        
+        # Gibbs sampling
+        for i in range(num_samples):
+            for var in non_evidence:
+                cond_dist = conditional(var, state)
+                values = list(self.domains[var])
+                weights = [cond_dist[val] for val in values]
+                new_val = random.choices(values, weights=weights)[0]
+                state[var] = new_val
+
+            # Record samples after burn-in
+            if i >= burn_in:
+                counts[state[query_var]] += 1
+
+        #normalize
+        total_samples = num_samples - burn_in
+        distribution = {val: counts[val] / total_samples for val in self.domains[query_var]}
+
+        return " ".join("{:.4f}".format(distribution[val]) for val in self.domains[query_var])
 
 
 def parse_query_command(line):
@@ -216,6 +290,7 @@ def main():
                 result = bn.gquery(query_var, evidence)
 
             print(result)
+
 
 if __name__ == "__main__":
     main()
