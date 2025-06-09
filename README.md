@@ -2,7 +2,7 @@
 
 **Group members:**  
 Ngoc Dao — `ndao2@u.rochester.edu`  
-Luka Avno — `lavni@u.rochester.edu`
+Luka Avni — `lavni@u.rochester.edu`
 
 ## Overview
 
